@@ -20,10 +20,34 @@ REGION_RE = re.compile(r"r\.(-?\d+)\.(-?\d+)\.mca$")
 LIVE_WORLD = "/home/admin/ffcreate/world"   # never prune this unless --allow-live
 SECTOR = 4096
 
-# Per-region bitmasks, keyed (dim, rx, rz). Populated in main(), inherited by
-# workers via fork (copy-on-write) — never pickled per task.
+
+def _retry_io(fn, *args, attempts=10, base=0.05):
+    """Run a destructive fs op, retrying on transient Windows sharing locks.
+
+    On Windows, antivirus (Defender) and the search indexer briefly open files
+    right after they're written/touched, so os.remove/os.replace can raise
+    PermissionError (WinError 32). Retry with exponential backoff; re-raise if it
+    never clears. A no-op on POSIX, where these locks don't occur."""
+    for i in range(attempts):
+        try:
+            return fn(*args)
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(base * (2 ** i))
+
+# Per-region bitmasks, keyed (dim, rx, rz). On fork (Linux/macOS) workers inherit
+# these from main() via copy-on-write. On spawn (Windows) workers re-import this
+# module, so they are seeded explicitly through the Pool initializer below.
 KEEP = {}    # bit idx set => keep this chunk (inhabited >= threshold, or NULL)
 KNOWN = {}   # bit idx set => DB has a row for this chunk
+DRY_RUN = False
+
+
+def init_worker(keep, known, dry_run):
+    """Pool initializer: seed worker globals (needed under spawn, harmless on fork)."""
+    global KEEP, KNOWN, DRY_RUN
+    KEEP, KNOWN, DRY_RUN = keep, known, dry_run
 
 DIMS = {
     "overworld": "",
@@ -65,13 +89,17 @@ def prune_file(task):
     # 0-byte stub: no chunks at all -> delete.
     if size == 0:
         if not DRY_RUN:
-            os.remove(path)
+            _retry_io(os.remove, path)
         return {**base, "action": "deleted_stub", "removed": 0, "kept": 0, "before": 0, "after": 0}
 
     known = KNOWN.get((dim, rx, rz))
     keepm = KEEP.get((dim, rx, rz), 0)
 
     try:
+        # All reads happen inside this `with`; the file handle is then closed
+        # before any os.remove/os.replace. On Windows you cannot delete or replace
+        # a file your own process still holds open (no FILE_SHARE_DELETE), so the
+        # destructive ops must run only after the handle is released.
         with open(path, "rb") as f:
             header = f.read(2 * SECTOR)
             if len(header) < 2 * SECTOR:
@@ -89,63 +117,79 @@ def prune_file(task):
                     present.append((idx, off, cnt))
 
             if not present:
-                if not DRY_RUN:
-                    os.remove(path)
-                return {**base, "action": "deleted_no_chunks", "removed": 0, "kept": 0,
-                        "before": size, "after": 0}
-
-            # Keep predicate. If the DB never saw this region, keep everything
-            # present (we can't judge it). Otherwise drop chunks the DB knows
-            # and that are below threshold.
-            if known is None:
-                keep_entries = present
-                unknown_region = True
+                # Empty of chunks -> delete, but only after the handle is closed.
+                delete_after = True
+                result_no_chunks = {**base, "action": "deleted_no_chunks", "removed": 0,
+                                    "kept": 0, "before": size, "after": 0}
             else:
-                unknown_region = False
-                keep_entries = [
-                    (idx, off, cnt) for (idx, off, cnt) in present
-                    if ((keepm >> idx) & 1) or not ((known >> idx) & 1)
-                ]
+                delete_after = False
+                result_no_chunks = None
 
-            if not keep_entries:
-                if not DRY_RUN:
-                    os.remove(path)
-                return {**base, "action": "deleted_all_below", "removed": len(present),
-                        "kept": 0, "before": size, "after": 0}
+            if not delete_after:
+                # Keep predicate. If the DB never saw this region, keep everything
+                # present (we can't judge it). Otherwise drop chunks the DB knows
+                # and that are below threshold.
+                if known is None:
+                    keep_entries = present
+                    unknown_region = True
+                else:
+                    unknown_region = False
+                    keep_entries = [
+                        (idx, off, cnt) for (idx, off, cnt) in present
+                        if ((keepm >> idx) & 1) or not ((known >> idx) & 1)
+                    ]
 
-            if len(keep_entries) == len(present):
-                # Nothing to drop — leave the file untouched.
-                act = "kept_unknown_region" if unknown_region else "kept_whole"
-                return {**base, "action": act, "removed": 0, "kept": len(present),
-                        "before": size, "after": size}
+                if not keep_entries:
+                    result_all_below = {**base, "action": "deleted_all_below",
+                                        "removed": len(present), "kept": 0,
+                                        "before": size, "after": 0}
+                else:
+                    result_all_below = None
 
-            # Rewrite compacted: header (2 sectors) + kept chunk sectors verbatim.
-            new_loc = bytearray(SECTOR)
-            new_ts = bytearray(SECTOR)
-            chunks = []
-            cursor = 2
-            for (idx, off, cnt) in keep_entries:
-                f.seek(off * SECTOR)
-                # Guard: detect oversized/external (.mcc) chunk stubs so we never
-                # silently corrupt one. (None exist in this world.)
-                head5 = f.read(5)
-                if len(head5) == 5:
-                    comp = head5[4]
-                    if comp & 0x80:
-                        return {**base, "action": "error",
-                                "error": f"external .mcc chunk at idx {idx}; not handled",
-                                "removed": 0, "kept": 0, "before": size, "after": size}
-                f.seek(off * SECTOR)
-                data = f.read(cnt * SECTOR)
-                if len(data) < cnt * SECTOR:
-                    data += b"\x00" * (cnt * SECTOR - len(data))
-                chunks.append(data)
-                new_loc[idx * 4]     = (cursor >> 16) & 0xFF
-                new_loc[idx * 4 + 1] = (cursor >> 8) & 0xFF
-                new_loc[idx * 4 + 2] = cursor & 0xFF
-                new_loc[idx * 4 + 3] = cnt
-                new_ts[idx * 4:idx * 4 + 4] = ts[idx * 4:idx * 4 + 4]
-                cursor += cnt
+                if keep_entries and len(keep_entries) == len(present):
+                    # Nothing to drop — leave the file untouched.
+                    act = "kept_unknown_region" if unknown_region else "kept_whole"
+                    return {**base, "action": act, "removed": 0, "kept": len(present),
+                            "before": size, "after": size}
+
+                if keep_entries:
+                    # Rewrite compacted: header (2 sectors) + kept chunk sectors verbatim.
+                    new_loc = bytearray(SECTOR)
+                    new_ts = bytearray(SECTOR)
+                    chunks = []
+                    cursor = 2
+                    for (idx, off, cnt) in keep_entries:
+                        f.seek(off * SECTOR)
+                        # Guard: detect oversized/external (.mcc) chunk stubs so we
+                        # never silently corrupt one. (None exist in this world.)
+                        head5 = f.read(5)
+                        if len(head5) == 5:
+                            comp = head5[4]
+                            if comp & 0x80:
+                                return {**base, "action": "error",
+                                        "error": f"external .mcc chunk at idx {idx}; not handled",
+                                        "removed": 0, "kept": 0, "before": size, "after": size}
+                        f.seek(off * SECTOR)
+                        data = f.read(cnt * SECTOR)
+                        if len(data) < cnt * SECTOR:
+                            data += b"\x00" * (cnt * SECTOR - len(data))
+                        chunks.append(data)
+                        new_loc[idx * 4]     = (cursor >> 16) & 0xFF
+                        new_loc[idx * 4 + 1] = (cursor >> 8) & 0xFF
+                        new_loc[idx * 4 + 2] = cursor & 0xFF
+                        new_loc[idx * 4 + 3] = cnt
+                        new_ts[idx * 4:idx * 4 + 4] = ts[idx * 4:idx * 4 + 4]
+                        cursor += cnt
+
+        # ---- file handle now closed; safe to mutate on disk ----
+        if delete_after:
+            if not DRY_RUN:
+                _retry_io(os.remove, path)
+            return result_no_chunks
+        if result_all_below is not None:
+            if not DRY_RUN:
+                _retry_io(os.remove, path)
+            return result_all_below
 
         after = (2 + (cursor - 2)) * SECTOR
         if not DRY_RUN:
@@ -155,7 +199,7 @@ def prune_file(task):
                 g.write(new_ts)
                 for d in chunks:
                     g.write(d)
-            os.replace(tmp, path)
+            _retry_io(os.replace, tmp, path)
 
         return {**base, "action": "rewritten", "removed": len(present) - len(keep_entries),
                 "kept": len(keep_entries), "before": size, "after": after}
@@ -232,7 +276,8 @@ def main():
     errors = []
     t1 = time.time()
     done = 0
-    with multiprocessing.Pool(args.workers) as pool:
+    with multiprocessing.Pool(args.workers, initializer=init_worker,
+                              initargs=(KEEP, KNOWN, DRY_RUN)) as pool:
         for r in pool.imap_unordered(prune_file, tasks, chunksize=16):
             d = agg[r["dim"]]
             d["files"] += 1
