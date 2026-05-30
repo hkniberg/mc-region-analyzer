@@ -28,6 +28,8 @@ resumable and corrupt files are tracked rather than silently skipped.
 
 ```
 scan_chunks.py          The scanner: region files -> SQLite. stdlib only.
+prune_world.py          Prune a world in place using the DB: drop low-inhabited
+                        chunks and dead region files. stdlib only.
 inhabited.py            Tiny companion: dump InhabitedTime for one chunk/region.
 viz/                    Web app for browsing the database.
   app.py                Flask backend (3 read-only JSON endpoints).
@@ -83,7 +85,46 @@ python3 inhabited.py /path/to/world/region/r.0.0.mca 5 5   # one chunk
 python3 inhabited.py /path/to/world/region/r.0.0.mca       # whole region summary
 ```
 
-## 2. Browse the database
+## 2. Prune a world
+
+Using a database from step 1, prune a world **in place** — drop chunks below an
+inhabited-time threshold and delete region files where every chunk is below it.
+Applies to `region/`, `entities/` and `poi/` across all three dimensions
+(`entities/` and `poi/` mirror the `region/` keep-set). Region files are rewritten
+compacted, so the freed space is real.
+
+> **Point this at a COPY.** It's destructive and irreversible. It refuses to run
+> against the hard-coded live world path unless `--allow-live` is given, and never
+> writes to anything but `--world`.
+
+```bash
+# dry-run first — reports what would change, writes nothing
+python3 prune_world.py --world /path/to/world-copy --dry-run
+
+# then for real
+python3 prune_world.py --world /path/to/world-copy
+```
+
+**Useful flags:**
+
+| flag | meaning |
+|---|---|
+| `--world PATH` | world directory to prune in place (required) |
+| `--db PATH` | chunks DB to use as the keep oracle (default `/home/admin/claude/chunks_full.db`) |
+| `--min-ticks N` | keep chunks with `inhabited_ticks >= N` (default 1200 = 1 min) |
+| `--workers N` | worker processes (default `os.cpu_count()`) |
+| `--dry-run` | report only, change nothing |
+| `--allow-live` | permit running against the live world path (dangerous) |
+
+Safe-by-default keep rule: chunks present on disk but **absent from the DB** (e.g.
+generated after the scan) and chunks the DB couldn't parse are **kept**, so a
+stale DB never causes silent data loss.
+
+> **Copy from a quiesced world.** Copying a world while its server is autosaving
+> can capture region files mid-write (torn chunks that regenerate on load). Stop
+> the server, or flush + pause saves (`save-off` / `save-all flush`) before copying.
+
+## 3. Browse the database
 
 ```bash
 cd viz
