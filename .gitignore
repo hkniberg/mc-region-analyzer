@@ -1,0 +1,17 @@
+# Databases — regenerate with scan_chunks.py. Keep only the bundled sample.
+*.db
+*.db-wal
+*.db-shm
+*.wal
+*.shm
+!data/chunks_sample.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.DS_Store

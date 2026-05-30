@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FFCreate World Browser</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <h1>FFCreate</h1>
+
+    <section>
+      <h2>Dimension</h2>
+      <div class="btn-group" id="dim-buttons">
+        <button data-dim="overworld" class="active">Overworld</button>
+        <button data-dim="nether">Nether</button>
+        <button data-dim="end">End</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Color mode</h2>
+      <div class="radio-group" id="color-mode">
+        <label><input type="radio" name="cm" value="status" checked> Status</label>
+        <label><input type="radio" name="cm" value="inhabited"> Inhabited time (log)</label>
+        <label><input type="radio" name="cm" value="be"> Block entities (log)</label>
+        <label><input type="radio" name="cm" value="modified"> Last modified</label>
+        <label><input type="radio" name="cm" value="complete"> Chunk completeness</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Filters</h2>
+      <label class="check"><input type="checkbox" id="hide-empty"> Hide empty regions</label>
+      <label class="slider">Min inhabited (hours): <span id="min-inh-label">0</span>
+        <input type="range" id="min-inh" min="0" max="100" value="0" step="1">
+      </label>
+    </section>
+
+    <section>
+      <h2>View</h2>
+      <button id="fit-populated" class="full">Fit to populated</button>
+      <button id="fit-all" class="full">Fit all (incl. outliers)</button>
+      <button id="back-to-world" class="full" style="display:none">← Back to world</button>
+    </section>
+
+    <section id="stats">
+      <h2>Stats</h2>
+      <div id="stats-body">—</div>
+    </section>
+
+    <section id="legend">
+      <h2>Legend</h2>
+      <div id="legend-body">—</div>
+    </section>
+  </aside>
+
+  <main id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div id="coord-readout"></div>
+    <div id="view-label"></div>
+  </main>
+
+  <aside id="info-panel">
+    <h2>Info</h2>
+    <div id="info-body" class="placeholder">Hover or click a region.</div>
+  </aside>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
