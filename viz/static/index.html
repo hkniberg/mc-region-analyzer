@@ -33,8 +33,12 @@
     <section>
       <h2>Filters</h2>
       <label class="check"><input type="checkbox" id="hide-empty"> Hide empty regions</label>
-      <label class="slider">Min inhabited (hours): <span id="min-inh-label">0</span>
-        <input type="range" id="min-inh" min="0" max="100" value="0" step="1">
+      <label class="slider">Min inhabited: <span id="min-inh-label">0</span> <span id="min-inh-unit">min</span>
+        <div class="btn-group" style="margin-top:4px;margin-bottom:4px">
+          <button id="unit-mins" class="active">mins</button>
+          <button id="unit-hours">hours</button>
+        </div>
+        <input type="range" id="min-inh" min="0" max="120" value="0" step="1">
       </label>
     </section>
 

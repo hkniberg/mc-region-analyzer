@@ -12,7 +12,8 @@ const state = {
   regionPayload: null,          // {region, chunks}
   chunkByKey: new Map(),        // "cx,cz" -> chunk row (for region view)
   hideEmpty: false,
-  minInhHours: 0,
+  minInhValue: 0,
+  inhUnit: "mins",
   camera: { x: 0, y: 0, zoom: 8 }, // (x,y) = world coords at canvas center
   selected: null,               // {kind: 'region'|'chunk', key: string}
   worldStats: null,             // min/max precomputed for current dim
@@ -156,11 +157,17 @@ function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 // ----- Filters -----
 
+function getInhThresholdTicks() {
+  if (state.minInhValue === 0) return 0;
+  return state.inhUnit === "mins"
+    ? state.minInhValue * 1200
+    : state.minInhValue * TICKS_PER_HOUR;
+}
+
 function regionPassesFilter(r) {
   if (state.hideEmpty && r.scan_status === "empty") return false;
-  if (state.minInhHours > 0) {
-    const hours = (r.max_inh || 0) / TICKS_PER_HOUR;
-    if (hours < state.minInhHours) return false;
+  if (state.minInhValue > 0) {
+    if ((r.max_inh || 0) < getInhThresholdTicks()) return false;
   }
   return true;
 }
@@ -185,7 +192,9 @@ function colorForChunk(c) {
 
 function statusColorChunk(c) {
   if (c.error) return "#d33";
-  if ((c.inhabited_ticks || 0) > 0) return "#3aa05a";
+  const thr = getInhThresholdTicks();
+  const visited = thr > 0 ? (c.inhabited_ticks || 0) >= thr : (c.inhabited_ticks || 0) > 0;
+  if (visited) return "#3aa05a";
   if (c.status === "minecraft:full") return "#bda44a";
   if (c.status) return "#555";
   return "#1a1a1d";
@@ -470,8 +479,12 @@ function updateStats() {
 function updateLegend() {
   let html = "";
   if (state.colorMode === "status") {
+    const thr = getInhThresholdTicks();
+    const visitedLabel = thr > 0
+      ? `visited (inh ≥ ${state.minInhValue} ${state.inhUnit === "mins" ? "min" : "h"})`
+      : "visited (inhabited > 0)";
     html = [
-      ["#3aa05a", "visited (inhabited > 0)"],
+      ["#3aa05a", visitedLabel],
       ["#bda44a", "generated, unvisited"],
       ["#555",    "partial-gen only"],
       ["#3a3a3a", "empty stub"],
@@ -646,12 +659,35 @@ document.getElementById("hide-empty").addEventListener("change", (e) => {
 
 const minInhSlider = document.getElementById("min-inh");
 const minInhLabel = document.getElementById("min-inh-label");
+const minInhUnit = document.getElementById("min-inh-unit");
 minInhSlider.addEventListener("input", () => {
-  state.minInhHours = Number(minInhSlider.value);
-  minInhLabel.textContent = state.minInhHours;
+  state.minInhValue = Number(minInhSlider.value);
+  minInhLabel.textContent = state.minInhValue;
   updateStats();
+  updateLegend();
   render();
 });
+
+function setInhUnit(unit) {
+  state.inhUnit = unit;
+  state.minInhValue = 0;
+  minInhSlider.value = 0;
+  minInhLabel.textContent = 0;
+  if (unit === "mins") {
+    minInhSlider.max = 120;
+    minInhUnit.textContent = "min";
+  } else {
+    minInhSlider.max = 100;
+    minInhUnit.textContent = "h";
+  }
+  document.getElementById("unit-mins").classList.toggle("active", unit === "mins");
+  document.getElementById("unit-hours").classList.toggle("active", unit === "hours");
+  updateStats();
+  updateLegend();
+  render();
+}
+document.getElementById("unit-mins").addEventListener("click", () => setInhUnit("mins"));
+document.getElementById("unit-hours").addEventListener("click", () => setInhUnit("hours"));
 
 document.getElementById("fit-populated").addEventListener("click", () => { fitToPopulated(); render(); });
 document.getElementById("fit-all").addEventListener("click", () => { fitAll(); render(); });

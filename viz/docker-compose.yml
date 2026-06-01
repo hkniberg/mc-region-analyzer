@@ -1,0 +1,13 @@
+services:
+  mc-viz:
+    build: .
+    container_name: mc-viz
+    restart: unless-stopped
+    ports:
+      - "8089:8089"
+    volumes:
+      - /home/admin/tools/region-data:/data:ro
+      - ./app.py:/app/app.py:ro
+      - ./static:/app/static:ro
+    environment:
+      - CHUNKS_DB=/data/ffcreate-chunks.db
